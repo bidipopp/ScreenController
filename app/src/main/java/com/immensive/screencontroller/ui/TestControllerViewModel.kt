@@ -9,6 +9,8 @@ import com.immensive.screencontroller.data.MonitorCommandRepository
 import com.immensive.screencontroller.protocol.ColorTemperatureCommand
 import com.immensive.screencontroller.protocol.ColorTemperatureValue
 import com.immensive.screencontroller.protocol.Command
+import com.immensive.screencontroller.protocol.CommandExecutionReport
+import com.immensive.screencontroller.protocol.CommandExecutionStep
 import com.immensive.screencontroller.protocol.CommandResult
 import com.immensive.screencontroller.protocol.IrRemoteLockMode
 import com.immensive.screencontroller.protocol.PowerCommand
@@ -58,6 +60,7 @@ class TestControllerViewModel(
         uiState = uiState.copy(
             isSending = false,
             lastResult = "Action annulée",
+            diagnostic = "Exécution annulée avant la fin.",
         )
     }
 
@@ -69,22 +72,22 @@ class TestControllerViewModel(
 
         when {
             host.isEmpty() -> {
-                uiState = uiState.copy(inputError = "IP/host requis")
+                uiState = uiState.withInputError("IP/host requis")
                 return
             }
 
             port == null || port !in 1..65535 -> {
-                uiState = uiState.copy(inputError = "Port invalide (1..65535)")
+                uiState = uiState.withInputError("Port invalide (1..65535)")
                 return
             }
 
             monitorId == null -> {
-                uiState = uiState.copy(inputError = "Monitor ID invalide (0..255)")
+                uiState = uiState.withInputError("Monitor ID invalide (0..255)")
                 return
             }
 
             timeoutMs == null || timeoutMs !in 1L..MAX_TIMEOUT_MS -> {
-                uiState = uiState.copy(inputError = "Timeout invalide (1..$MAX_TIMEOUT_MS ms)")
+                uiState = uiState.withInputError("Timeout invalide (1..$MAX_TIMEOUT_MS ms)")
                 return
             }
         }
@@ -95,10 +98,11 @@ class TestControllerViewModel(
             inputError = null,
             lastAction = action.label,
             lastResult = "Envoi en cours…",
+            diagnostic = "Collecte du diagnostic en cours…",
         )
 
         currentJob = viewModelScope.launch {
-            val result = repository.sendCommand(
+            val report = repository.sendCommandWithReport(
                 host = host,
                 port = port,
                 monitorId = monitorId,
@@ -107,7 +111,8 @@ class TestControllerViewModel(
             )
             uiState = uiState.copy(
                 isSending = false,
-                lastResult = result.toReadableText(timeoutMs = timeoutMs),
+                lastResult = report.commandResult.toReadableText(timeoutMs = timeoutMs),
+                diagnostic = report.toDiagnosticText(),
             )
         }
     }
@@ -133,7 +138,13 @@ data class TestControllerUiState(
     val isSending: Boolean = false,
     val lastAction: String? = null,
     val lastResult: String = "Aucune action envoyée",
+    val diagnostic: String = "Aucun diagnostic disponible.",
     val inputError: String? = null,
+)
+
+private fun TestControllerUiState.withInputError(message: String): TestControllerUiState = copy(
+    inputError = message,
+    diagnostic = "Entrée invalide: $message",
 )
 
 enum class TestAction(val label: String, val command: Command) {
@@ -155,4 +166,35 @@ private fun CommandResult.toReadableText(timeoutMs: Long): String = when (this) 
     is CommandResult.UnknownHost -> "Hôte introuvable (adresse IP/nom invalide)"
     is CommandResult.ConnectionClosed -> "Connexion fermée (socket coupée pendant l'échange)"
     is CommandResult.Error -> "Erreur: $message"
+}
+
+private fun CommandExecutionReport.toDiagnosticText(): String = buildString {
+    appendLine("Timeout configuré: ${timeoutMs} ms")
+    appendLine("Durée totale: ${totalDurationMs} ms")
+    appendLine("TX: $txHex")
+    appendLine("RX: ${rxHex ?: "n/a"}")
+    appendLine("Étapes:")
+    if (steps.isEmpty()) {
+        append("- (aucune étape)")
+    } else {
+        steps.forEach { step ->
+            append("- ")
+            append(step.step.toReadableLabel())
+            append(" | ")
+            append(step.status.name)
+            append(" | ")
+            append(step.durationMs)
+            append(" ms")
+            append(" | ")
+            append(step.message)
+            appendLine()
+        }
+    }
+}
+
+private fun CommandExecutionStep.toReadableLabel(): String = when (this) {
+    CommandExecutionStep.CONNECT -> "CONNECT"
+    CommandExecutionStep.WRITE -> "WRITE"
+    CommandExecutionStep.READ -> "READ"
+    CommandExecutionStep.PARSE -> "PARSE"
 }

@@ -35,38 +35,213 @@ class ProtocolTcpClient(
         monitorId: UByte = ProtocolConstants.DEFAULT_MONITOR_ID,
         port: Int = ProtocolConstants.LAN_TCP_PORT,
         timeoutMs: Long = ProtocolConstants.DEFAULT_TCP_TIMEOUT_MS,
-    ): CommandResult = withContext(ioDispatcher) {
+    ): CommandResult = sendWithReport(
+        host = host,
+        command = command,
+        monitorId = monitorId,
+        port = port,
+        timeoutMs = timeoutMs,
+    ).commandResult
+
+    suspend fun sendWithReport(
+        host: String,
+        command: Command,
+        monitorId: UByte = ProtocolConstants.DEFAULT_MONITOR_ID,
+        port: Int = ProtocolConstants.LAN_TCP_PORT,
+        timeoutMs: Long = ProtocolConstants.DEFAULT_TCP_TIMEOUT_MS,
+    ): CommandExecutionReport = withContext(ioDispatcher) {
+        val totalStartNs = System.nanoTime()
+        val txFrame = command.toFrame(monitorId)
+        val stepDetails = mutableListOf<CommandExecutionStepDetail>()
+        var rxBytes: ByteArray? = null
+
+        fun elapsedMs(startNs: Long): Long = (System.nanoTime() - startNs) / 1_000_000
+
+        fun recordStep(
+            step: CommandExecutionStep,
+            status: CommandExecutionStepStatus,
+            message: String,
+            startNs: Long,
+        ) {
+            stepDetails += CommandExecutionStepDetail(
+                step = step,
+                status = status,
+                message = message,
+                durationMs = elapsedMs(startNs),
+            )
+        }
+
+        fun timeoutMessage(step: CommandExecutionStep): String = when (step) {
+            CommandExecutionStep.CONNECT -> "Timeout de connexion"
+            CommandExecutionStep.READ -> "Timeout d'attente de réponse"
+            CommandExecutionStep.WRITE -> "Timeout d'écriture"
+            CommandExecutionStep.PARSE -> "Timeout de parsing"
+        }
+
+        fun makeReport(result: CommandResult): CommandExecutionReport = CommandExecutionReport(
+            commandResult = result,
+            timeoutMs = timeoutMs,
+            totalDurationMs = elapsedMs(totalStartNs),
+            txHex = txFrame.toHexString(),
+            rxHex = rxBytes?.takeIf { it.isNotEmpty() }?.toHexString(),
+            steps = stepDetails.toList(),
+        )
+
         if (timeoutMs !in 1L..MAX_TIMEOUT_MS) {
             val message = "Timeout invalide: $timeoutMs ms (attendu: 1..$MAX_TIMEOUT_MS)"
-            return@withContext CommandResult.Error(message, IllegalArgumentException(message))
+            return@withContext makeReport(
+                CommandResult.Error(message, IllegalArgumentException(message))
+            )
         }
+
+        var currentStep: CommandExecutionStep? = null
 
         try {
             withTimeout(timeoutMs) {
-                connectionFactory.connect(host, port, timeoutMs.toInt()).use { connection ->
-                    connection.write(command.toFrame(monitorId))
-                    val response = connection.read()
-                    if (response.isEmpty()) {
-                        CommandResult.ConnectionClosed()
+                currentStep = CommandExecutionStep.CONNECT
+                val connectStartNs = System.nanoTime()
+                val connection = try {
+                    val createdConnection = connectionFactory.connect(host, port, timeoutMs.toInt())
+                    recordStep(
+                        step = CommandExecutionStep.CONNECT,
+                        status = CommandExecutionStepStatus.OK,
+                        message = "Connexion TCP établie",
+                        startNs = connectStartNs,
+                    )
+                    createdConnection
+                } catch (t: Throwable) {
+                    val message = if (t is SocketTimeoutException) {
+                        timeoutMessage(CommandExecutionStep.CONNECT)
                     } else {
-                        ResponseParser.parse(response)
+                        t.message ?: "Échec de connexion"
                     }
+                    recordStep(
+                        step = CommandExecutionStep.CONNECT,
+                        status = CommandExecutionStepStatus.FAIL,
+                        message = message,
+                        startNs = connectStartNs,
+                    )
+                    throw t
+                }
+
+                connection.use {
+                    currentStep = CommandExecutionStep.WRITE
+                    val writeStartNs = System.nanoTime()
+                    try {
+                        connection.write(txFrame)
+                        recordStep(
+                            step = CommandExecutionStep.WRITE,
+                            status = CommandExecutionStepStatus.OK,
+                            message = "Trame envoyée (${txFrame.size} octets)",
+                            startNs = writeStartNs,
+                        )
+                    } catch (t: Throwable) {
+                        val message = if (t is SocketTimeoutException) {
+                            timeoutMessage(CommandExecutionStep.WRITE)
+                        } else {
+                            t.message ?: "Échec d'écriture TCP"
+                        }
+                        recordStep(
+                            step = CommandExecutionStep.WRITE,
+                            status = CommandExecutionStepStatus.FAIL,
+                            message = message,
+                            startNs = writeStartNs,
+                        )
+                        throw t
+                    }
+
+                    currentStep = CommandExecutionStep.READ
+                    val readStartNs = System.nanoTime()
+                    val response = try {
+                        connection.read()
+                    } catch (t: Throwable) {
+                        val message = if (t is SocketTimeoutException) {
+                            timeoutMessage(CommandExecutionStep.READ)
+                        } else {
+                            t.message ?: "Échec de lecture TCP"
+                        }
+                        recordStep(
+                            step = CommandExecutionStep.READ,
+                            status = CommandExecutionStepStatus.FAIL,
+                            message = message,
+                            startNs = readStartNs,
+                        )
+                        throw t
+                    }
+                    rxBytes = response
+                    if (response.isEmpty()) {
+                        recordStep(
+                            step = CommandExecutionStep.READ,
+                            status = CommandExecutionStepStatus.FAIL,
+                            message = "Connexion fermée par le pair (0 octet lu)",
+                            startNs = readStartNs,
+                        )
+                        return@withTimeout makeReport(CommandResult.ConnectionClosed())
+                    }
+                    recordStep(
+                        step = CommandExecutionStep.READ,
+                        status = CommandExecutionStepStatus.OK,
+                        message = "Réponse reçue (${response.size} octets)",
+                        startNs = readStartNs,
+                    )
+
+                    currentStep = CommandExecutionStep.PARSE
+                    val parseStartNs = System.nanoTime()
+                    val parsed = ResponseParser.parse(response)
+                    val parseStatus = if (parsed is CommandResult.Error) {
+                        CommandExecutionStepStatus.FAIL
+                    } else {
+                        CommandExecutionStepStatus.OK
+                    }
+                    val parseMessage = when (parsed) {
+                        CommandResult.Ack -> "Réponse ACK"
+                        CommandResult.Nack -> "Réponse NACK"
+                        CommandResult.Nav -> "Réponse NAV"
+                        is CommandResult.Error -> parsed.message
+                        else -> "Réponse analysée"
+                    }
+                    recordStep(
+                        step = CommandExecutionStep.PARSE,
+                        status = parseStatus,
+                        message = parseMessage,
+                        startNs = parseStartNs,
+                    )
+
+                    makeReport(parsed)
                 }
             }
         } catch (_: TimeoutCancellationException) {
-            CommandResult.Timeout
+            if (currentStep != null && stepDetails.lastOrNull()?.step != currentStep) {
+                val fallbackStartNs = System.nanoTime()
+                recordStep(
+                    step = currentStep!!,
+                    status = CommandExecutionStepStatus.FAIL,
+                    message = timeoutMessage(currentStep!!),
+                    startNs = fallbackStartNs,
+                )
+            }
+            makeReport(CommandResult.Timeout)
         } catch (_: SocketTimeoutException) {
-            CommandResult.Timeout
+            if (currentStep != null && stepDetails.lastOrNull()?.step != currentStep) {
+                val fallbackStartNs = System.nanoTime()
+                recordStep(
+                    step = currentStep!!,
+                    status = CommandExecutionStepStatus.FAIL,
+                    message = timeoutMessage(currentStep!!),
+                    startNs = fallbackStartNs,
+                )
+            }
+            makeReport(CommandResult.Timeout)
         } catch (e: ConnectException) {
-            CommandResult.ConnectionRefused(e)
+            makeReport(CommandResult.ConnectionRefused(e))
         } catch (e: UnknownHostException) {
-            CommandResult.UnknownHost(e)
+            makeReport(CommandResult.UnknownHost(e))
         } catch (e: SocketException) {
-            CommandResult.ConnectionClosed(e)
+            makeReport(CommandResult.ConnectionClosed(e))
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (t: Throwable) {
-            CommandResult.Error("Erreur TCP", t)
+            makeReport(CommandResult.Error("Erreur TCP", t))
         }
     }
 }
@@ -105,4 +280,8 @@ private class SocketTcpConnection(private val socket: Socket) : TcpConnection {
     override fun close() {
         socket.close()
     }
+}
+
+private fun ByteArray.toHexString(): String = joinToString(" ") { byte ->
+    byte.toUByte().toString(16).uppercase().padStart(2, '0')
 }
