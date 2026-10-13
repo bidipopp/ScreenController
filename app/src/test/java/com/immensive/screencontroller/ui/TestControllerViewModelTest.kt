@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
@@ -37,6 +38,10 @@ class TestControllerViewModelTest {
         viewModel.send(TestAction.POWER_ON)
 
         assertEquals("Timeout invalide (1..2147483647 ms)", viewModel.uiState.inputError)
+        assertEquals(
+            "Entrée invalide: Timeout invalide (1..2147483647 ms)",
+            viewModel.uiState.diagnostic,
+        )
     }
 
     @Test
@@ -93,6 +98,34 @@ class TestControllerViewModelTest {
         advanceUntilIdle()
 
         assertEquals("Timeout après 250 ms (connexion ou réponse)", viewModel.uiState.lastResult)
+        assertContains(viewModel.uiState.diagnostic, "Timeout configuré: 250 ms")
+        assertContains(viewModel.uiState.diagnostic, "RX: n/a")
+        assertContains(viewModel.uiState.diagnostic, "READ | FAIL")
+    }
+
+    @Test
+    fun `includes detailed diagnostic when command is acknowledged`() = runTest {
+        val mainDispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(mainDispatcher)
+        val repository = MonitorCommandRepository(
+            client = ProtocolTcpClient(
+                connectionFactory = RecordingConnectionFactory { ackFrame() },
+                ioDispatcher = mainDispatcher,
+            ),
+        )
+        val viewModel = TestControllerViewModel(repository)
+        viewModel.updateHost("127.0.0.1")
+        viewModel.updatePort("timeout:1500")
+
+        viewModel.send(TestAction.POWER_ON)
+        advanceUntilIdle()
+
+        assertEquals("ACK (succès)", viewModel.uiState.lastResult)
+        assertContains(viewModel.uiState.diagnostic, "Timeout configuré: 1500 ms")
+        assertContains(viewModel.uiState.diagnostic, "TX:")
+        assertContains(viewModel.uiState.diagnostic, "RX:")
+        assertContains(viewModel.uiState.diagnostic, "CONNECT | OK")
+        assertContains(viewModel.uiState.diagnostic, "PARSE | OK")
     }
 
     private class RecordingConnectionFactory(

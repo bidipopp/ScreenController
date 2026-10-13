@@ -120,5 +120,22 @@ fun TestControllerScreen(
                 )
             }
         }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = "Diagnostic détaillé",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = state.diagnostic,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }
