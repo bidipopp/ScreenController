@@ -12,6 +12,14 @@ object ProtocolConstants {
     const val DATA_CONTROL: UByte = 0x01u
 
     const val LAN_TCP_PORT: Int = 5000
+    /**
+     * Timeout réseau par défaut (connexion + attente de réponse) pour le transport LAN.
+     *
+     * La note protocole mentionne 500 ms comme délai à partir duquel un *retry* peut être déclenché
+     * côté contrôleur, pas comme contrainte stricte de timeout socket.
+     * En pratique LAN réel, une valeur plus prudente évite les faux timeouts instantanés.
+     */
+    const val DEFAULT_TCP_TIMEOUT_MS: Long = 3_000L
 
     const val RESPONSE_HEADER: UByte = 0x21u
     const val COMMUNICATION_CONTROL_COMMAND: UByte = 0x00u

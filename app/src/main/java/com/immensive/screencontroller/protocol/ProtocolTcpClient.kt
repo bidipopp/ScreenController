@@ -25,13 +25,22 @@ class ProtocolTcpClient(
     private val connectionFactory: TcpConnectionFactory = JvmSocketConnectionFactory(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    private companion object {
+        const val MAX_TIMEOUT_MS: Long = Int.MAX_VALUE.toLong()
+    }
+
     suspend fun send(
         host: String,
         command: Command,
         monitorId: UByte = ProtocolConstants.DEFAULT_MONITOR_ID,
         port: Int = ProtocolConstants.LAN_TCP_PORT,
-        timeoutMs: Long = 500L,
+        timeoutMs: Long = ProtocolConstants.DEFAULT_TCP_TIMEOUT_MS,
     ): CommandResult = withContext(ioDispatcher) {
+        if (timeoutMs !in 1L..MAX_TIMEOUT_MS) {
+            val message = "Timeout invalide: $timeoutMs ms (attendu: 1..$MAX_TIMEOUT_MS)"
+            return@withContext CommandResult.Error(message, IllegalArgumentException(message))
+        }
+
         try {
             withTimeout(timeoutMs) {
                 connectionFactory.connect(host, port, timeoutMs.toInt()).use { connection ->

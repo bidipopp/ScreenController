@@ -65,6 +65,14 @@ fun TestControllerScreen(
             singleLine = true,
         )
 
+        OutlinedTextField(
+            value = state.timeoutMs,
+            onValueChange = { onPortChanged("timeout:$it") },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Timeout réseau (ms)") },
+            singleLine = true,
+        )
+
         state.inputError?.let { error ->
             Text(
                 text = error,
