@@ -28,6 +28,21 @@ From the project root:
 
 Then run the app on an emulator/device from Android Studio (main activity: `MainActivity`).
 
+## APK artifact (always available)
+
+A debug APK is built and published automatically as a GitHub Actions artifact:
+
+- Workflow: `.github/workflows/android-apk.yml`
+- Artifact name: `ScreenController-debug-apk`
+
+How to download it:
+
+1. Open the repository **Actions** tab.
+2. Open the latest successful **Build Android APK** run.
+3. Download the `ScreenController-debug-apk` artifact.
+
+You can also trigger a fresh build at any time with **Run workflow** (`workflow_dispatch`).
+
 ## Quick usage
 
 1. Open the app.
