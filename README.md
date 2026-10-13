@@ -18,16 +18,6 @@ Main goal: quickly apply the same settings to multiple displays on a local netwo
 - JDK 17
 - An iiyama TFxx39AS-compatible display on the same local network
 
-## Run the app
-
-From the project root:
-
-```bash
-.\gradlew.bat :app:assembleDebug
-```
-
-Then run the app on an emulator/device from Android Studio (main activity: `MainActivity`).
-
 ## APK artifact (always available)
 
 A debug APK is built and published automatically as a GitHub Actions artifact:
@@ -42,6 +32,16 @@ How to download it:
 3. Download the `ScreenController-debug-apk` artifact.
 
 You can also trigger a fresh build at any time with **Run workflow** (`workflow_dispatch`).
+
+## Run the app
+
+From the project root:
+
+```bash
+.\gradlew.bat :app:assembleDebug
+```
+
+Then run the app on an emulator/device from Android Studio (main activity: `MainActivity`).
 
 ## Quick usage
 
