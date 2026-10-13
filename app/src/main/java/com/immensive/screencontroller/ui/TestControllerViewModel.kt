@@ -21,6 +21,10 @@ import kotlinx.coroutines.launch
 class TestControllerViewModel(
     private val repository: MonitorCommandRepository = MonitorCommandRepository(),
 ) : ViewModel() {
+    private companion object {
+        const val TIMEOUT_PREFIX = "timeout:"
+        const val MAX_TIMEOUT_MS: Long = Int.MAX_VALUE.toLong()
+    }
 
     var uiState by mutableStateOf(TestControllerUiState())
         private set
@@ -32,6 +36,15 @@ class TestControllerViewModel(
     }
 
     fun updatePort(value: String) {
+        // Bridge UI: TestControllerScreen expose déjà onPortChanged sans callback dédié timeout.
+        // Le champ timeout préfixe la valeur avec "timeout:" pour éviter un refactor hors périmètre.
+        if (value.startsWith(TIMEOUT_PREFIX)) {
+            uiState = uiState.copy(
+                timeoutMs = value.removePrefix(TIMEOUT_PREFIX),
+                inputError = null,
+            )
+            return
+        }
         uiState = uiState.copy(port = value, inputError = null)
     }
 
@@ -52,6 +65,7 @@ class TestControllerViewModel(
         val host = uiState.host.trim()
         val port = uiState.port.toIntOrNull()
         val monitorId = parseMonitorId(uiState.monitorId)
+        val timeoutMs = uiState.timeoutMs.trim().toLongOrNull()
 
         when {
             host.isEmpty() -> {
@@ -66,6 +80,11 @@ class TestControllerViewModel(
 
             monitorId == null -> {
                 uiState = uiState.copy(inputError = "Monitor ID invalide (0..255)")
+                return
+            }
+
+            timeoutMs == null || timeoutMs !in 1L..MAX_TIMEOUT_MS -> {
+                uiState = uiState.copy(inputError = "Timeout invalide (1..$MAX_TIMEOUT_MS ms)")
                 return
             }
         }
@@ -84,10 +103,11 @@ class TestControllerViewModel(
                 port = port,
                 monitorId = monitorId,
                 command = action.command,
+                timeoutMs = timeoutMs,
             )
             uiState = uiState.copy(
                 isSending = false,
-                lastResult = result.toReadableText(),
+                lastResult = result.toReadableText(timeoutMs = timeoutMs),
             )
         }
     }
@@ -109,6 +129,7 @@ data class TestControllerUiState(
     val host: String = "",
     val port: String = ProtocolConstants.LAN_TCP_PORT.toString(),
     val monitorId: String = ProtocolConstants.DEFAULT_MONITOR_ID.toString(),
+    val timeoutMs: String = ProtocolConstants.DEFAULT_TCP_TIMEOUT_MS.toString(),
     val isSending: Boolean = false,
     val lastAction: String? = null,
     val lastResult: String = "Aucune action envoyée",
@@ -125,11 +146,11 @@ enum class TestAction(val label: String, val command: Command) {
     COLOR_9300("Color 9300K", ColorTemperatureCommand.Set(ColorTemperatureValue.K9300)),
 }
 
-private fun CommandResult.toReadableText(): String = when (this) {
+private fun CommandResult.toReadableText(timeoutMs: Long): String = when (this) {
     CommandResult.Ack -> "ACK (succès)"
     CommandResult.Nack -> "NACK (commande refusée)"
     CommandResult.Nav -> "NAV (valeur non disponible)"
-    CommandResult.Timeout -> "Timeout (aucune réponse)"
+    CommandResult.Timeout -> "Timeout après ${timeoutMs} ms (connexion ou réponse)"
     is CommandResult.ConnectionRefused -> "Connexion refusée (écran injoignable sur le port TCP)"
     is CommandResult.UnknownHost -> "Hôte introuvable (adresse IP/nom invalide)"
     is CommandResult.ConnectionClosed -> "Connexion fermée (socket coupée pendant l'échange)"
